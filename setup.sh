@@ -71,7 +71,7 @@ if [ ! -f "${APP_DIR}/.env" ]; then
 PORT=5000
 UPLOAD_PASSWORD=changeme
 DATA_DIR=${DATA_DIR}
-CORS_ORIGINS=http://dashboard.example.com,http://upload.example.com
+CORS_ORIGINS=http://10.4.10.75,http://10.4.10.75:8080
 EOF
         echo "  Created default .env — EDIT IT with real values!"
     fi
@@ -133,8 +133,10 @@ echo "[+] Configuring firewall..."
 if command -v firewall-cmd &>/dev/null; then
     firewall-cmd --permanent --add-service=http 2>/dev/null || true
     firewall-cmd --permanent --add-service=https 2>/dev/null || true
+    firewall-cmd --permanent --add-port=8080/tcp 2>/dev/null || true
+    firewall-cmd --permanent --add-port=5000/tcp 2>/dev/null || true
     firewall-cmd --reload 2>/dev/null || true
-    echo "  Firewall configured for HTTP/HTTPS."
+    echo "  Firewall configured for HTTP/HTTPS + ports 8080, 5000."
 else
     echo "  firewall-cmd not found, skipping firewall config."
 fi
@@ -147,14 +149,12 @@ echo "============================================"
 echo "  Setup Complete!"
 echo "============================================"
 echo ""
-echo "  Dashboard:     http://dashboard.example.com"
-echo "  Upload Portal: http://upload.example.com"
-echo "  API:           http://localhost:5000"
+echo "  Dashboard:     http://10.4.10.75"
+echo "  Upload Portal: http://10.4.10.75:8080"
+echo "  API:           http://10.4.10.75:5000"
 echo ""
-echo "  IMPORTANT: Update the following:"
-echo "  1. Edit ${APP_DIR}/.env with real password & domain"
-echo "  2. Edit /etc/nginx/conf.d/treasury.conf with real domains"
-echo "  3. Consider adding SSL with certbot"
+echo "  IMPORTANT:"
+echo "  1. Edit ${APP_DIR}/.env to set a secure UPLOAD_PASSWORD"
 echo ""
 echo "  PM2 Commands:"
 echo "    pm2 status        — Check process status"

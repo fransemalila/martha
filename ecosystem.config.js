@@ -9,7 +9,7 @@ module.exports = {
         PORT: 5000,
         DATA_DIR: "/opt/treasury-dashboard/data",
         UPLOAD_PASSWORD: "changeme",
-        CORS_ORIGINS: "http://dashboard.example.com,http://upload.example.com"
+        CORS_ORIGINS: "http://10.4.10.75,http://10.4.10.75:8080"
       },
       instances: 1,
       autorestart: true,
