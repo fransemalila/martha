@@ -207,6 +207,57 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", uptime: process.uptime() });
 });
 
+// Diagnostic: dump raw Excel structure for the latest uploaded file
+app.get("/api/debug/excel-dump", (_req, res) => {
+  try {
+    const XLSX = require("xlsx");
+    const db = getDb();
+    const fileType = _req.query.type || "forecast";
+    const file = db.prepare(
+      "SELECT * FROM uploads WHERE type = ? ORDER BY created_at DESC LIMIT 1"
+    ).get(fileType);
+
+    if (!file || !fs.existsSync(file.filepath)) {
+      return res.json({ error: "No file found", type: fileType });
+    }
+
+    const buffer = fs.readFileSync(file.filepath);
+    const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true, cellNF: false, cellText: false });
+
+    const result = { filename: file.filename, sheets: {} };
+
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+      const sheetData = { rowCount: rows.length, sampleRows: [] };
+
+      // Dump first 60 rows with col index labels
+      for (let i = 0; i < Math.min(rows.length, 60); i++) {
+        const row = rows[i];
+        if (!row) { sheetData.sampleRows.push({ row: i, data: null }); continue; }
+        const cells = {};
+        for (let c = 0; c < Math.min(row.length, 20); c++) {
+          const v = row[c];
+          if (v !== null && v !== undefined) {
+            cells[`col${c}`] = {
+              value: v instanceof Date ? v.toISOString() : v,
+              type: typeof v,
+            };
+          }
+        }
+        if (Object.keys(cells).length > 0) {
+          sheetData.sampleRows.push({ row: i, cells });
+        }
+      }
+      result.sheets[sheetName] = sheetData;
+    }
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Debug endpoint — shows parsed data summary
 app.get("/api/debug/parsed", (_req, res) => {
   try {
