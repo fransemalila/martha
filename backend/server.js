@@ -57,7 +57,7 @@ function authCheck(req, res, next) {
 }
 
 // POST /api/upload
-app.post("/api/upload", upload.single("file"), (req, res) => {
+app.post("/api/upload", authCheck, upload.single("file"), (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No file provided" });
@@ -210,6 +210,8 @@ app.get("/api/health", (_req, res) => {
 app.listen(PORT, () => {
   console.log(`Treasury Dashboard API running on port ${PORT}`);
   console.log(`Data directory: ${DATA_DIR}`);
+  console.log(`CORS origins: ${corsOrigins.join(", ")}`);
+  console.log(`Upload password configured: ${UPLOAD_PASSWORD ? "yes (" + UPLOAD_PASSWORD.length + " chars)" : "NO - using default"}`);
   // Initialize DB
   getDb();
 });
