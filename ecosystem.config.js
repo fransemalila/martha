@@ -5,11 +5,7 @@ module.exports = {
       script: "./backend/server.js",
       cwd: __dirname,
       env: {
-        NODE_ENV: "production",
-        PORT: 5000,
-        DATA_DIR: "/opt/treasury-dashboard/data",
-        UPLOAD_PASSWORD: "changeme",
-        CORS_ORIGINS: "http://10.4.10.75,http://10.4.10.75:8080"
+        NODE_ENV: "production"
       },
       instances: 1,
       autorestart: true,
