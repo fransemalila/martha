@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  ComposedChart, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
   LineChart, Line, PieChart, Pie, Cell,
 } from "recharts";
 import { TrendingUp, TrendingDown, Minus, Info } from "lucide-react";
@@ -148,15 +148,45 @@ export default function ActualsTab({ data }) {
 
   return (
     <div className="space-y-6">
+      {/* Period Filter */}
+      <PeriodFilter value={period} onChange={setPeriod} />
+
+      {/* Forecast-only banner */}
+      {forecastOnly && (
+        <div className="flex items-center gap-2 px-4 py-2.5 bg-amber-900/20 border border-amber-800/50 rounded-lg text-amber-300 text-sm">
+          <Info className="w-4 h-4" />
+          Showing forecast data only. Upload a Cashflow Report file for actual vs forecast comparison.
+        </div>
+      )}
+
       {/* Variance Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <VarianceCard title="Receipts Variance" actual={actualReceipts} forecast={forecastReceipts} variance={receiptsVariance} />
-        <VarianceCard title="Disbursements Variance" actual={actualDisbursements} forecast={forecastDisbursements} variance={disbursementsVariance} />
-        <VarianceCard title="Net Flow Variance" actual={actualNetFlow} forecast={forecastNetFlow} variance={netFlowVariance} />
+        <VarianceCard title="Receipts" actual={actualReceipts} forecast={forecastReceipts} variance={receiptsVariance} note={forecastOnly ? "Forecast Only" : undefined} />
+        <VarianceCard title="Disbursements" actual={actualDisbursements} forecast={forecastDisbursements} variance={disbursementsVariance} note={forecastOnly ? "Forecast Only" : undefined} />
+        <VarianceCard title="Net Flow" actual={actualNetFlow} forecast={forecastNetFlow} variance={netFlowVariance} note={forecastOnly ? "Forecast Only" : undefined} />
       </div>
 
-      {/* Actual vs Forecast */}
-      {comparisonData.length > 0 && (
+      {/* Forecast full-year comparison chart (when no report data) */}
+      {forecastOnly && forecastComparisonData.length > 0 && (
+        <ChartCard title="Full-Year Forecast Comparison">
+          <ResponsiveContainer width="100%" height={340}>
+            <ComposedChart data={forecastComparisonData} margin={{ left: 10, right: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+              <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+              <YAxis tickFormatter={(v) => formatCurrency(v)} tick={{ fontSize: 11 }} />
+              <Tooltip content={<CustomTooltip />} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Bar dataKey="receipts" name="Forecast Receipts" fill="#10b981" radius={[2, 2, 0, 0]} barSize={16} />
+              <Bar dataKey="directCosts" name="Direct Costs" fill="#ef4444" radius={[2, 2, 0, 0]} barSize={16} />
+              <Bar dataKey="opex" name="Operating Expenses" fill="#f59e0b" radius={[2, 2, 0, 0]} barSize={16} />
+              <Line type="monotone" dataKey="netFlow" name="Net Flow" stroke="#22d3ee" strokeWidth={2} dot={{ r: 3 }} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      )}
+
+      {/* Actual vs Forecast (when report data available) */}
+      {!forecastOnly && comparisonData.length > 0 && (
         <ChartCard title="Actual vs Forecast Comparison">
           <ResponsiveContainer width="100%" height={340}>
             <BarChart data={comparisonData} margin={{ left: 10, right: 10 }}>
@@ -194,8 +224,8 @@ export default function ActualsTab({ data }) {
           )}
         </ChartCard>
 
-        {/* Tax Analysis */}
-        <ChartCard title="Tax Component Breakdown">
+        {/* Tax Analysis or Forecast Expense Categories */}
+        <ChartCard title={forecastOnly && forecastExpenseCategories.length > 0 ? "Forecast Expenses by Category" : "Tax Component Breakdown"}>
           {taxPieData.length > 0 ? (
             <div>
               <ResponsiveContainer width="100%" height={240}>
@@ -240,6 +270,55 @@ export default function ActualsTab({ data }) {
                 <div className="flex items-center justify-between text-xs pt-2 border-t border-gray-800 font-medium">
                   <span className="text-gray-300">Total Tax Liability</span>
                   <span className="font-mono text-red-400">{formatCurrency(reserves.totalTaxLiability)}</span>
+                </div>
+              </div>
+            </div>
+          ) : forecastOnly && forecastExpenseCategories.length > 0 ? (
+            <div>
+              <ResponsiveContainer width="100%" height={240}>
+                <PieChart>
+                  <Pie
+                    data={forecastExpenseCategories}
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={90}
+                    dataKey="amount"
+                    nameKey="category"
+                    paddingAngle={2}
+                  >
+                    {forecastExpenseCategories.map((_, i) => (
+                      <Cell key={i} fill={TAX_COLORS[i % TAX_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    content={({ active, payload }) => {
+                      if (!active || !payload?.length) return null;
+                      const d = payload[0].payload;
+                      return (
+                        <div className="bg-navy-900 border border-gray-700 rounded-lg px-4 py-3 shadow-xl">
+                          <p className="text-xs font-medium text-white mb-1">{d.category}</p>
+                          <p className="text-sm font-mono text-cyan-400">{formatCurrency(d.amount, false)}</p>
+                        </div>
+                      );
+                    }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="space-y-2 mt-2">
+                {forecastExpenseCategories.map((c, i) => (
+                  <div key={i} className="flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: TAX_COLORS[i % TAX_COLORS.length] }} />
+                      <span className="text-gray-400">{c.category}</span>
+                    </div>
+                    <span className="font-mono text-gray-300">{formatCurrency(c.amount)}</span>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between text-xs pt-2 border-t border-gray-800 font-medium">
+                  <span className="text-gray-300">Total Forecast Expenses</span>
+                  <span className="font-mono text-red-400">
+                    {formatCurrency(forecastExpenseCategories.reduce((s, c) => s + c.amount, 0))}
+                  </span>
                 </div>
               </div>
             </div>
