@@ -7,22 +7,109 @@ const MONTH_NAMES = [
 
 function parseNumeric(val) {
   if (val === null || val === undefined) return 0;
-  if (typeof val === "number") return val;
-  const s = String(val).replace(/,/g, "").trim();
-  if (!s || s === "-" || /^\s*-\s*$/.test(s)) return 0;
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  const s = String(val).replace(/,/g, "").replace(/\s/g, "").trim();
+  if (!s || s === "-" || /^-+$/.test(s) || s === "N/A") return 0;
   const n = parseFloat(s);
   return isNaN(n) ? 0 : n;
 }
 
-function normalizeLabel(label) {
+function norm(label) {
   if (!label) return "";
-  return String(label).toUpperCase().replace(/[^A-Z0-9&/() -]/g, " ").replace(/\s+/g, " ").trim();
+  return String(label)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function fuzzyMatch(label, pattern) {
+  const nl = norm(label);
+  const np = norm(pattern);
+  if (!nl || !np) return false;
+  if (nl.includes(np) || nl === np) return true;
+  const words = np.split(" ").filter((w) => w.length > 2);
+  return words.length > 0 && words.every((w) => nl.includes(w));
 }
 
 function findSheet(workbook, name) {
-  const upper = name.toUpperCase().trim();
-  return workbook.SheetNames.find((s) => s.toUpperCase().trim() === upper);
+  const n = norm(name);
+  return workbook.SheetNames.find((s) => norm(s) === n)
+    || workbook.SheetNames.find((s) => norm(s).includes(n) || n.includes(norm(s)));
 }
+
+// Scan rows and find label-value pairs from any column layout
+function scanKeyValuePairs(rows, maxRows) {
+  const pairs = [];
+  const limit = maxRows ? Math.min(rows.length, maxRows) : rows.length;
+
+  for (let i = 0; i < limit; i++) {
+    const row = rows[i];
+    if (!row) continue;
+
+    // Try every column as a potential label
+    for (let c = 0; c < Math.min(row.length, 15); c++) {
+      const cell = row[c];
+      if (cell === null || cell === undefined) continue;
+      if (typeof cell !== "string" || cell.trim().length < 2) continue;
+
+      const label = cell.trim();
+      const normalized = norm(label);
+      if (!normalized || normalized.length < 2) continue;
+
+      // Look for numeric value in the next few columns
+      for (let v = c + 1; v < Math.min(c + 5, row.length); v++) {
+        const val = row[v];
+        if (val === null || val === undefined) continue;
+        if (typeof val === "number" || (typeof val === "string" && /^-?[\d,]+\.?\d*$/.test(val.replace(/\s/g, "")))) {
+          pairs.push({
+            label,
+            normalized,
+            value: parseNumeric(val),
+            row: i,
+            labelCol: c,
+            valueCol: v,
+            fullRow: row,
+          });
+          break;
+        }
+      }
+    }
+  }
+  return pairs;
+}
+
+function findPair(pairs, patterns) {
+  if (!Array.isArray(patterns)) patterns = [patterns];
+  for (const pattern of patterns) {
+    // Exact norm match
+    const exact = pairs.find((p) => p.normalized === norm(pattern));
+    if (exact) return exact;
+    // Fuzzy match
+    const fuzzy = pairs.find((p) => fuzzyMatch(p.label, pattern));
+    if (fuzzy) return fuzzy;
+  }
+  return null;
+}
+
+function findAllPairs(pairs, patterns) {
+  const results = [];
+  const used = new Set();
+  if (!Array.isArray(patterns)) patterns = [patterns];
+
+  for (const pattern of patterns) {
+    for (const p of pairs) {
+      if (used.has(p.row)) continue;
+      if (fuzzyMatch(p.label, pattern)) {
+        results.push(p);
+        used.add(p.row);
+      }
+    }
+  }
+  return results;
+}
+
+// ===================== SHEET PARSERS =====================
 
 function parseDataSheet(workbook) {
   const sheetName = findSheet(workbook, "DATA");
@@ -30,99 +117,122 @@ function parseDataSheet(workbook) {
 
   const sheet = workbook.Sheets[sheetName];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+  const pairs = scanKeyValuePairs(rows);
 
   const summary = {};
+
+  // Extract summary values using fuzzy matching
+  const openingPair = findPair(pairs, ["OPENING BALANCE", "OPENING BAL"]);
+  if (openingPair) summary.openingBalance = openingPair.value;
+
+  const receiptsPair = findPair(pairs, ["TOTAL RECEIPTS"]);
+  if (receiptsPair) summary.totalReceipts = receiptsPair.value;
+
+  const disbPair = findPair(pairs, ["TOTAL DISBURSEMENTS"]);
+  if (disbPair) summary.totalDisbursements = disbPair.value;
+
+  const netPair = findPair(pairs, ["NET CASH FLOW", "NET CASHFLOW"]);
+  if (netPair) summary.netCashFlow = netPair.value;
+
+  const closingPair = findPair(pairs, ["CLOSING BALANCE", "CLOSING BAL"]);
+  if (closingPair) summary.closingBalance = closingPair.value;
+
+  const taxesPair = findPair(pairs, ["TAXES"]);
+  if (taxesPair) summary.taxes = taxesPair.value;
+
+  // Receipt breakdown
+  const receiptPatterns = [
+    "MPESA", "M-PESA", "TIGO PESA", "TIGOPESA",
+    "AIRTEL MONEY USSD PUSH", "AIRTEL MONEY-USSD PUSH",
+    "AIRTEL MONEY",
+    "HALOPESA", "HALO PESA",
+    "SELCOM",
+    "LIQUIDATION OF CALL DEPOSIT", "LIQUIDATION CALL DEPOSIT",
+    "LIQUIDATION OF FIXED DEPOSIT", "LIQUIDATION FIXED DEPOSIT",
+    "INTEREST EARNED ON CALL", "INTEREST EARNED CALL DEPOSIT",
+    "INTEREST EARNED ON FIXED", "INTEREST EARNED FIXED DEPOSIT",
+    "INTEREST EARNED ON MNO", "INTEREST EARNED MNO COLLECTION",
+    "CASH DEPOSIT",
+    "UNSECURED LOAN",
+    "ACCOUNT TO ACCOUNT RECEIVED",
+    "BANK TO BANK RECEIVED",
+  ];
+
   const receiptBreakdown = [];
+  const usedReceiptRows = new Set();
+  for (const pattern of receiptPatterns) {
+    for (const p of pairs) {
+      if (usedReceiptRows.has(p.row)) continue;
+      if (fuzzyMatch(p.label, pattern) && p.value !== 0) {
+        // Avoid "AIRTEL MONEY" matching "AIRTEL MONEY USSD PUSH"
+        if (norm(pattern) === "AIRTEL MONEY" && norm(p.label).includes("USSD")) continue;
+        receiptBreakdown.push({ category: p.label, amount: p.value });
+        usedReceiptRows.add(p.row);
+        break;
+      }
+    }
+  }
+
+  // Disbursement breakdown
+  const disbPatterns = [
+    "RELATED PARTY PAYMENTS", "RELATED PARTY",
+    "JACKPOT TOP UP", "JACKPOT TOP-UP",
+    "DIRECTORS",
+    "VENDOR PAYMENTS",
+    "PAYROLL", "SALARY",
+    "PAYMENT TO WINNERS", "PAYMENTS TO WINNERS",
+  ];
   const disbursementBreakdown = [];
-  const sideData = { taxDue: null, reserves: null, netCashPosition: null, paymentRun: null };
+  const usedDisbRows = new Set();
+  for (const pattern of disbPatterns) {
+    for (const p of pairs) {
+      if (usedDisbRows.has(p.row)) continue;
+      if (fuzzyMatch(p.label, pattern) && p.value !== 0) {
+        disbursementBreakdown.push({ category: p.label, amount: p.value });
+        usedDisbRows.add(p.row);
+        break;
+      }
+    }
+  }
 
-  const receiptLabels = [
-    "MPESA", "TIGO PESA", "AIRTEL MONEY-USSD PUSH", "AIRTEL MONEY",
-    "HALOPESA", "SELCOM", "LIQUIDATION OF CALL DEPOSIT",
-    "LIQUIDATION OF FIXED DEPOSIT", "INTEREST EARNED ON CALL DEPOSIT",
-    "INTEREST EARNED ON FIXED DEPOSIT", "INTEREST EARNED ON MNO COLLECTION",
-    "CASH DEPOSIT", "UNSECURED LOAN-PEVANS EA", "UNSECURED LOAN PEVANS EA"
-  ];
-
-  const disbursementLabels = [
-    "RELATED PARTY PAYMENTS", "JACKPOT TOP-UP", "JACKPOT TOP UP",
-    "DIRECTORS", "VENDOR PAYMENTS"
-  ];
-
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
+  // Side data: scan all rows for tax/reserves/cash position info
+  const sideData = {};
+  for (const row of rows) {
     if (!row) continue;
-
-    const labelRaw = row[0];
-    const label = normalizeLabel(labelRaw);
-    if (!label) continue;
-
-    const val = parseNumeric(row[1]);
-
-    // Summary fields
-    if (label.includes("OPENING BALANCE")) {
-      summary.openingBalance = val;
-    } else if (label === "TOTAL RECEIPTS" || label.includes("TOTAL RECEIPTS")) {
-      summary.totalReceipts = val;
-    } else if (label === "TOTAL DISBURSEMENTS" || label.includes("TOTAL DISBURSEMENTS")) {
-      summary.totalDisbursements = val;
-    } else if (label.includes("NET CASH FLOW") || label === "NET CASH FLOW") {
-      summary.netCashFlow = val;
-    } else if (label.includes("CLOSING BALANCE")) {
-      summary.closingBalance = val;
-    } else if (label.includes("TAXES") && !label.includes("GAMING") && !label.includes("DUE")) {
-      summary.taxes = val;
-    }
-
-    // Receipt breakdown
-    for (const rl of receiptLabels) {
-      if (label === rl || label.includes(rl)) {
-        // Handle "AIRTEL MONEY" not matching "AIRTEL MONEY-USSD PUSH"
-        if (rl === "AIRTEL MONEY" && label.includes("USSD")) continue;
-        receiptBreakdown.push({ category: String(labelRaw).trim(), amount: val });
-        break;
+    for (let c = 0; c < Math.min(row.length, 15); c++) {
+      const cell = row[c];
+      if (!cell || typeof cell !== "string") continue;
+      const n = norm(cell);
+      if (n.includes("TAX DUE") && !n.includes("DATE")) {
+        for (let v = c + 1; v < Math.min(c + 4, row.length); v++) {
+          const val = parseNumeric(row[v]);
+          if (val !== 0) { sideData.taxDue = val; break; }
+        }
       }
-    }
-
-    // Disbursement breakdown
-    for (const dl of disbursementLabels) {
-      if (label === dl || label.includes(dl)) {
-        disbursementBreakdown.push({ category: String(labelRaw).trim(), amount: val });
-        break;
+      if (n.includes("RESERVE") && !n.includes("LIQUIDATION")) {
+        for (let v = c + 1; v < Math.min(c + 4, row.length); v++) {
+          const val = parseNumeric(row[v]);
+          if (val !== 0) { sideData.reserves = val; break; }
+        }
       }
-    }
-
-    // Side data (cols E-G)
-    if (row[4]) {
-      const sideLabel = normalizeLabel(row[4]);
-      if (sideLabel.includes("TAX DUE") && !sideLabel.includes("DATE")) {
-        sideData.taxDue = parseNumeric(row[5]) || parseNumeric(row[6]);
+      if (n.includes("NET CASH POSITION")) {
+        for (let v = c + 1; v < Math.min(c + 4, row.length); v++) {
+          const val = parseNumeric(row[v]);
+          if (val !== 0) { sideData.netCashPosition = val; break; }
+        }
       }
-      if (sideLabel.includes("RESERVE")) {
-        sideData.reserves = parseNumeric(row[5]) || parseNumeric(row[6]);
-      }
-    }
-
-    // Side data (cols H-I)
-    if (row[7]) {
-      const sideLabel2 = normalizeLabel(row[7]);
-      if (sideLabel2.includes("NET CASH POSITION")) {
-        sideData.netCashPosition = parseNumeric(row[8]);
-      }
-      if (sideLabel2.includes("PAYMENT RUN")) {
-        sideData.paymentRun = parseNumeric(row[8]);
+      if (n.includes("PAYMENT RUN")) {
+        for (let v = c + 1; v < Math.min(c + 4, row.length); v++) {
+          const val = parseNumeric(row[v]);
+          if (val !== 0) { sideData.paymentRun = val; break; }
+        }
       }
     }
   }
 
   return {
-    data: {
-      summary,
-      receiptBreakdown,
-      disbursementBreakdown,
-      sideData,
-    },
-    warning: Object.keys(summary).length < 3 ? "Incomplete summary data in DATA sheet" : null,
+    data: { summary, receiptBreakdown, disbursementBreakdown, sideData },
+    warning: Object.keys(summary).length < 2 ? "Incomplete summary data in DATA sheet" : null,
   };
 }
 
@@ -132,34 +242,33 @@ function parseReservesSheet(workbook) {
 
   const sheet = workbook.Sheets[sheetName];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+  const pairs = scanKeyValuePairs(rows);
 
-  const components = [];
-  let totalTaxLiability = 0;
-
-  const taxLabels = [
-    "GAMING TAX ON WINNINGS", "GAMING TAX ON GGR", "GAMING LEVY",
-    "GAMING TAX ON VIRTUAL GGR", "GAMING TAX ON CASINO GGR",
-    "WHT VENDORS", "PAYE & SDL", "PAYE SDL"
+  const taxPatterns = [
+    "GAMING TAX ON WINNINGS",
+    "GAMING TAX ON GGR",
+    "GAMING LEVY",
+    "GAMING TAX ON VIRTUAL",
+    "GAMING TAX ON CASINO",
+    "WHT VENDORS", "WHT",
+    "PAYE", "PAYE & SDL",
   ];
 
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    if (!row) continue;
-    const label = normalizeLabel(row[0]);
-    if (!label) continue;
-
-    for (const tl of taxLabels) {
-      if (label.includes(tl) || label === tl) {
-        const amount = parseNumeric(row[1]);
-        components.push({ category: String(row[0]).trim(), amount });
+  const components = [];
+  const usedRows = new Set();
+  for (const pattern of taxPatterns) {
+    for (const p of pairs) {
+      if (usedRows.has(p.row)) continue;
+      if (fuzzyMatch(p.label, pattern)) {
+        components.push({ category: p.label, amount: p.value });
+        usedRows.add(p.row);
         break;
       }
     }
-
-    if (label.includes("TOTAL TAX LIABILITY") || label.includes("TOTAL TAX")) {
-      totalTaxLiability = parseNumeric(row[1]);
-    }
   }
+
+  const totalPair = findPair(pairs, ["TOTAL TAX LIABILITY", "TOTAL TAX"]);
+  const totalTaxLiability = totalPair ? totalPair.value : components.reduce((s, c) => s + c.amount, 0);
 
   return {
     data: { totalTaxLiability, components },
@@ -167,104 +276,66 @@ function parseReservesSheet(workbook) {
   };
 }
 
-function parseReceiptsSheet(workbook) {
-  // Note: sheet name has a leading space
-  const sheetName = findSheet(workbook, "Receipts");
-  if (!sheetName) return { data: null, warning: "Sheet 'Receipts' not found" };
+function parseGridSheet(workbook, sheetName) {
+  const found = findSheet(workbook, sheetName);
+  if (!found) return { data: null, warning: `Sheet '${sheetName}' not found` };
 
-  const sheet = workbook.Sheets[sheetName];
+  const sheet = workbook.Sheets[found];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
 
-  if (rows.length < 3) return { data: null, warning: "Receipts sheet has insufficient data" };
+  if (rows.length < 3) return { data: null, warning: `${sheetName} sheet has insufficient data` };
 
-  // Row 0: month labels, Row 1: dates or headers, Row 2+: data
-  const monthRow = rows[0];
-  const headerRow = rows[1];
-  const dailyData = [];
-  const monthlyTotals = [];
-  let inMonthlySection = false;
-
-  for (let i = 2; i < rows.length; i++) {
-    const row = rows[i];
-    if (!row) continue;
-
-    const label = normalizeLabel(row[0]);
-    if (!label) continue;
-
-    // Detect monthly totals section
-    if (label.includes("MONTHLY") || label.includes("TOTAL")) {
-      inMonthlySection = true;
-    }
-
-    if (inMonthlySection) {
-      // Extract monthly totals per category
-      const categoryTotals = { category: String(row[0]).trim() };
-      for (let m = 0; m < 12; m++) {
-        categoryTotals[MONTH_NAMES[m]] = parseNumeric(row[m + 1]);
-      }
-      monthlyTotals.push(categoryTotals);
-    } else {
-      // Daily data - collect category name and daily values
-      const entry = { category: String(row[0]).trim(), values: [] };
-      for (let c = 1; c < row.length && c <= 366; c++) {
-        const val = parseNumeric(row[c]);
-        if (val !== 0) {
-          entry.values.push({ col: c, amount: val });
-        }
-      }
-      if (entry.values.length > 0) {
-        dailyData.push(entry);
-      }
+  // Detect label column
+  let labelCol = 0;
+  for (let c = 0; c < Math.min(5, (rows[2] || []).length); c++) {
+    const cell = rows[2] ? rows[2][c] : null;
+    if (cell && typeof cell === "string" && cell.trim().length > 2) {
+      labelCol = c;
+      break;
     }
   }
 
-  return {
-    data: { dailyData: dailyData.slice(0, 50), monthlyTotals },
-    warning: null,
-  };
-}
-
-function parseDisbursementsSheet(workbook) {
-  const sheetName = findSheet(workbook, "Disbursements");
-  if (!sheetName) return { data: null, warning: "Sheet 'Disbursements' not found" };
-
-  const sheet = workbook.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
-
-  if (rows.length < 3) return { data: null, warning: "Disbursements sheet has insufficient data" };
-
   const dailyData = [];
   const monthlyTotals = [];
   let inMonthlySection = false;
 
   for (let i = 2; i < rows.length; i++) {
     const row = rows[i];
-    if (!row) continue;
+    if (!row) { inMonthlySection = false; continue; }
 
-    const label = normalizeLabel(row[0]);
+    const rawLabel = row[labelCol];
+    if (!rawLabel || typeof rawLabel !== "string") continue;
+    const label = norm(rawLabel);
     if (!label) continue;
 
-    if (label.includes("MONTHLY") || label.includes("TOTAL")) {
+    // Detect sections by blank rows or "MONTHLY TOTAL" headers
+    if (label.includes("MONTHLY") && label.includes("TOTAL")) {
       inMonthlySection = true;
+      continue;
     }
 
+    // Collect month totals if category followed by 12 month values
     if (inMonthlySection) {
-      const categoryTotals = { category: String(row[0]).trim() };
+      const categoryTotals = { category: rawLabel.trim() };
+      let hasData = false;
       for (let m = 0; m < 12; m++) {
-        categoryTotals[MONTH_NAMES[m]] = parseNumeric(row[m + 1]);
+        const val = parseNumeric(row[labelCol + 1 + m]);
+        categoryTotals[MONTH_NAMES[m]] = val;
+        if (val !== 0) hasData = true;
       }
-      monthlyTotals.push(categoryTotals);
+      if (hasData) monthlyTotals.push(categoryTotals);
     } else {
-      const entry = { category: String(row[0]).trim(), values: [] };
-      for (let c = 1; c < row.length && c <= 366; c++) {
+      // Daily data
+      const entry = { category: rawLabel.trim(), values: [] };
+      let hasNonZero = false;
+      for (let c = labelCol + 1; c < Math.min(row.length, 400); c++) {
         const val = parseNumeric(row[c]);
         if (val !== 0) {
           entry.values.push({ col: c, amount: val });
+          hasNonZero = true;
         }
       }
-      if (entry.values.length > 0) {
-        dailyData.push(entry);
-      }
+      if (hasNonZero) dailyData.push(entry);
     }
   }
 
@@ -282,48 +353,56 @@ function parseBBalancesSheet(workbook) {
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
 
   const accounts = [];
-  let headerFound = false;
+  let headerRow = -1;
   let colMap = {};
 
-  for (let i = 0; i < rows.length; i++) {
+  // Find header row by scanning for keywords
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
     const row = rows[i];
     if (!row) continue;
 
-    const label = normalizeLabel(row[0]);
-
-    // Find header row
-    if (!headerFound && (label.includes("ACCOUNT") || label.includes("BANK"))) {
-      for (let c = 0; c < row.length; c++) {
-        const h = normalizeLabel(row[c]);
-        if (h.includes("ACCOUNT")) colMap.account = c;
-        if (h.includes("STATUS")) colMap.status = c;
-        if (h.includes("OPENING")) colMap.opening = c;
-        if (h.includes("RECEIVED") || h.includes("CASH RECEIVED")) colMap.received = c;
-        if (h.includes("SPENT") || h.includes("CASH SPENT")) colMap.spent = c;
-        if (h.includes("REVALUATION")) colMap.revaluation = c;
-        if (h.includes("CLOSING") && h.includes("TZS")) colMap.closingTZS = c;
-        if (h.includes("CLOSING") && (h.includes("FX") || h.includes("FOREIGN"))) colMap.closingFX = c;
-        if (h.includes("CLOSING") && !h.includes("TZS") && !h.includes("FX") && !colMap.closingTZS) colMap.closingTZS = c;
+    let hits = 0;
+    for (let c = 0; c < row.length; c++) {
+      const h = norm(row[c]);
+      if (!h) continue;
+      if (h.includes("ACCOUNT") || h.includes("BANK NAME")) { colMap.account = c; hits++; }
+      if (h.includes("STATUS")) { colMap.status = c; hits++; }
+      if (h.includes("OPENING")) { colMap.opening = c; hits++; }
+      if (h.includes("RECEIVED") || h.includes("CASH IN")) { colMap.received = c; hits++; }
+      if (h.includes("SPENT") || h.includes("CASH OUT")) { colMap.spent = c; hits++; }
+      if (h.includes("REVALUATION")) { colMap.revaluation = c; hits++; }
+      if (h.includes("CLOSING")) {
+        if (h.includes("TZS") || !colMap.closingTZS) colMap.closingTZS = c;
+        if (h.includes("FX") || h.includes("FOREIGN")) colMap.closingFX = c;
+        hits++;
       }
-      headerFound = true;
-      continue;
     }
+    if (hits >= 3) { headerRow = i; break; }
+  }
 
-    if (headerFound && row[colMap.account || 0]) {
-      const accountName = String(row[colMap.account || 0]).trim();
-      if (!accountName || normalizeLabel(accountName).includes("TOTAL")) continue;
+  if (headerRow === -1) {
+    return { data: null, warning: "Could not find header row in BBalances sheet" };
+  }
 
-      accounts.push({
-        account: accountName,
-        status: row[colMap.status] ? String(row[colMap.status]).trim() : "Active",
-        openingBalance: parseNumeric(row[colMap.opening]),
-        cashReceived: parseNumeric(row[colMap.received]),
-        cashSpent: parseNumeric(row[colMap.spent]),
-        revaluation: parseNumeric(row[colMap.revaluation]),
-        closingBalanceTZS: parseNumeric(row[colMap.closingTZS]),
-        closingBalanceFX: parseNumeric(row[colMap.closingFX]),
-      });
-    }
+  const acctCol = colMap.account !== undefined ? colMap.account : 0;
+
+  for (let i = headerRow + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || !row[acctCol]) continue;
+
+    const accountName = String(row[acctCol]).trim();
+    if (!accountName || norm(accountName).includes("TOTAL") || accountName.length < 3) continue;
+
+    accounts.push({
+      account: accountName,
+      status: colMap.status !== undefined ? String(row[colMap.status] || "Active").trim() : "Active",
+      openingBalance: colMap.opening !== undefined ? parseNumeric(row[colMap.opening]) : 0,
+      cashReceived: colMap.received !== undefined ? parseNumeric(row[colMap.received]) : 0,
+      cashSpent: colMap.spent !== undefined ? parseNumeric(row[colMap.spent]) : 0,
+      revaluation: colMap.revaluation !== undefined ? parseNumeric(row[colMap.revaluation]) : 0,
+      closingBalanceTZS: colMap.closingTZS !== undefined ? parseNumeric(row[colMap.closingTZS]) : 0,
+      closingBalanceFX: colMap.closingFX !== undefined ? parseNumeric(row[colMap.closingFX]) : 0,
+    });
   }
 
   return {
@@ -350,52 +429,60 @@ function parsePaymentsSheet(workbook) {
     const row = rows[i];
     if (!row) continue;
 
-    const label = normalizeLabel(row[0]);
-    if (!label) continue;
+    // Find first non-empty cell as label
+    let rawLabel = null;
+    let labelCol = -1;
+    for (let c = 0; c < Math.min(row.length, 5); c++) {
+      if (row[c] && typeof row[c] === "string" && row[c].trim().length > 2) {
+        rawLabel = row[c].trim();
+        labelCol = c;
+        break;
+      }
+    }
+    if (!rawLabel) continue;
+    const label = norm(rawLabel);
 
     // Detect sections
-    if (label.includes("NET VENDOR") || label.includes("VENDOR PAYMENT")) {
-      currentSection = "vendors";
-      continue;
+    if (label.includes("NET VENDOR") || label.includes("VENDOR PAYMENT RUN")) {
+      currentSection = "vendors"; continue;
     }
     if (label.includes("RELATED PARTY")) {
-      currentSection = "relatedParty";
-      continue;
+      currentSection = "relatedParty"; continue;
     }
-    if (label.includes("TAX") && !label.includes("GAMING TAX ON")) {
-      currentSection = "taxes";
-      continue;
+    if ((label.includes("TAX") && !label.includes("GAMING TAX ON")) ||
+        label.includes("STATUTORY")) {
+      currentSection = "taxes"; continue;
     }
     if (label.includes("TOP 5") || label.includes("TOP VENDOR")) {
-      currentSection = "topVendors";
-      continue;
+      currentSection = "topVendors"; continue;
     }
 
-    // Parse rows based on section
-    const entry = {
-      label: String(row[0]).trim(),
-      amount: parseNumeric(row[1]),
-    };
-
-    // Look for date in subsequent columns
-    for (let c = 2; c < Math.min(row.length, 10); c++) {
-      const cellVal = row[c];
-      if (cellVal instanceof Date) {
-        entry.date = cellVal.toISOString().split("T")[0];
-        break;
-      } else if (typeof cellVal === "string" && /\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/.test(cellVal)) {
-        entry.date = cellVal;
-        break;
+    // Find amount in subsequent columns
+    let amount = 0;
+    let date = null;
+    for (let c = labelCol + 1; c < Math.min(row.length, 15); c++) {
+      const cell = row[c];
+      if (cell instanceof Date) {
+        date = cell.toISOString().split("T")[0];
+      } else if (typeof cell === "number" && cell > 40000 && cell < 50000) {
+        const d = XLSX.SSF.parse_date_code(cell);
+        if (d) date = `${d.y}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`;
+      } else if (typeof cell === "string" && /\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/.test(cell)) {
+        date = cell;
+      } else {
+        const num = parseNumeric(cell);
+        if (num !== 0 && amount === 0) amount = num;
       }
     }
 
-    if (entry.amount !== 0) {
-      switch (currentSection) {
-        case "vendors": vendors.push(entry); break;
-        case "relatedParty": relatedParty.push(entry); break;
-        case "taxes": taxes.push(entry); break;
-        case "topVendors": topVendors.push(entry); break;
-      }
+    if (amount === 0) continue;
+
+    const entry = { label: rawLabel, amount, date };
+    switch (currentSection) {
+      case "vendors": vendors.push(entry); break;
+      case "relatedParty": relatedParty.push(entry); break;
+      case "taxes": taxes.push(entry); break;
+      case "topVendors": topVendors.push(entry); break;
     }
   }
 
@@ -412,57 +499,48 @@ function parseCFForecastSheet(workbook) {
   const sheet = workbook.Sheets[sheetName];
   const range = XLSX.utils.decode_range(sheet["!ref"] || "A1");
 
-  // This sheet can be very wide - only parse 2026 columns
-  // Find columns that correspond to 2026 dates
-  const dailyClosingBalance = [];
-  const headerRow = 0;
-
-  // Read column headers to find 2026 dates
+  // Find 2026 columns
   const year2026Cols = [];
-  for (let c = range.s.c; c <= Math.min(range.e.c, 2500); c++) {
-    const cellAddr = XLSX.utils.encode_cell({ r: headerRow, c });
+  const currentYear = new Date().getFullYear();
+  const targetYear = currentYear;
+
+  for (let c = range.s.c; c <= Math.min(range.e.c, 3000); c++) {
+    const cellAddr = XLSX.utils.encode_cell({ r: 0, c });
     const cell = sheet[cellAddr];
     if (!cell) continue;
 
     let dateVal = null;
     if (cell.t === "d" || cell.v instanceof Date) {
       dateVal = new Date(cell.v);
-    } else if (cell.t === "n" && cell.v > 40000 && cell.v < 50000) {
-      dateVal = XLSX.SSF.parse_date_code(cell.v);
-      if (dateVal) {
-        dateVal = new Date(dateVal.y, dateVal.m - 1, dateVal.d);
-      }
+    } else if (cell.t === "n" && cell.v > 40000 && cell.v < 55000) {
+      const parsed = XLSX.SSF.parse_date_code(cell.v);
+      if (parsed) dateVal = new Date(parsed.y, parsed.m - 1, parsed.d);
     }
 
-    if (dateVal && dateVal.getFullYear() === 2026) {
-      year2026Cols.push({
-        col: c,
-        date: dateVal.toISOString().split("T")[0],
-      });
+    if (dateVal && dateVal.getFullYear() === targetYear) {
+      year2026Cols.push({ col: c, date: dateVal.toISOString().split("T")[0] });
     }
   }
 
   if (year2026Cols.length === 0) {
-    return { data: null, warning: "No 2026 date columns found in CF Forecast sheet" };
+    return { data: null, warning: `No ${targetYear} date columns found in CF Forecast sheet` };
   }
 
-  // Find key rows: Opening Balance, Total Receipts, Total Disbursements, Closing Balance
+  // Find key rows
   const keyRows = {};
-  for (let r = 0; r <= Math.min(range.e.r, 50); r++) {
+  for (let r = 0; r <= Math.min(range.e.r, 60); r++) {
     const cellAddr = XLSX.utils.encode_cell({ r, c: 0 });
     const cell = sheet[cellAddr];
     if (!cell) continue;
-    const label = normalizeLabel(cell.v);
-
-    if (label.includes("OPENING BALANCE")) keyRows.openingBalance = r;
+    const label = norm(cell.v);
+    if (label.includes("OPENING BALANCE") || label.includes("OPENING BAL")) keyRows.openingBalance = r;
     if (label.includes("TOTAL RECEIPTS")) keyRows.totalReceipts = r;
     if (label.includes("TOTAL DISBURSEMENTS")) keyRows.totalDisbursements = r;
-    if (label.includes("CLOSING BALANCE")) keyRows.closingBalance = r;
+    if (label.includes("CLOSING BALANCE") || label.includes("CLOSING BAL")) keyRows.closingBalance = r;
   }
 
-  // Extract daily data for 2026
   const dailyData = [];
-  for (const { col, date } of year2026Cols.slice(0, 100)) {
+  for (const { col, date } of year2026Cols.slice(0, 120)) {
     const entry = { date };
     for (const [key, row] of Object.entries(keyRows)) {
       const cellAddr = XLSX.utils.encode_cell({ r: row, c: col });
@@ -472,11 +550,10 @@ function parseCFForecastSheet(workbook) {
     dailyData.push(entry);
   }
 
-  return {
-    data: dailyData,
-    warning: null,
-  };
+  return { data: dailyData, warning: null };
 }
+
+// ===================== MAIN PARSER =====================
 
 function parseReport(buffer) {
   const workbook = XLSX.read(buffer, {
@@ -495,10 +572,10 @@ function parseReport(buffer) {
   const reservesResult = parseReservesSheet(workbook);
   if (reservesResult.warning) warnings.push(reservesResult.warning);
 
-  const receiptsResult = parseReceiptsSheet(workbook);
+  const receiptsResult = parseGridSheet(workbook, "Receipts");
   if (receiptsResult.warning) warnings.push(receiptsResult.warning);
 
-  const disbursementsResult = parseDisbursementsSheet(workbook);
+  const disbursementsResult = parseGridSheet(workbook, "Disbursements");
   if (disbursementsResult.warning) warnings.push(disbursementsResult.warning);
 
   const bbalancesResult = parseBBalancesSheet(workbook);

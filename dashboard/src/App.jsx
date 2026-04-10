@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { LayoutDashboard, TrendingUp, GitCompare, CreditCard, RefreshCw, Clock, AlertTriangle } from "lucide-react";
+import { LayoutDashboard, TrendingUp, GitCompare, CreditCard, RefreshCw, Clock, AlertTriangle, Download, Printer } from "lucide-react";
 import useDashboardData from "./hooks/useDashboardData";
 import OverviewTab from "./components/OverviewTab";
 import ForecastTab from "./components/ForecastTab";
@@ -49,13 +49,33 @@ export default function App() {
             ))}
           </nav>
 
-          {/* Status */}
-          <div className="flex items-center gap-4 text-xs text-gray-500">
+          {/* Status & Actions */}
+          <div className="flex items-center gap-3 text-xs text-gray-500">
             {lastUpdated && (
               <span className="flex items-center gap-1">
                 <Clock className="w-3 h-3" />
                 {lastUpdated.toLocaleTimeString()}
               </span>
+            )}
+            {hasData && (
+              <>
+                <a
+                  href={`/api/export/csv?section=${activeTab}`}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-gray-400 hover:text-cyan-400 border border-gray-700 rounded-lg hover:border-cyan-400/50 transition-colors"
+                  title="Export CSV"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span className="hidden md:inline">CSV</span>
+                </a>
+                <button
+                  onClick={() => window.print()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-gray-400 hover:text-cyan-400 border border-gray-700 rounded-lg hover:border-cyan-400/50 transition-colors"
+                  title="Print / Save as PDF"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span className="hidden md:inline">Print</span>
+                </button>
+              </>
             )}
             <button
               onClick={refetch}

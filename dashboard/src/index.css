@@ -37,3 +37,58 @@ body {
   background: #334155;
   border-radius: 3px;
 }
+
+/* Print styles */
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  header {
+    position: static !important;
+    background: white !important;
+    border-bottom: 2px solid #000 !important;
+  }
+
+  header nav button {
+    display: none !important;
+  }
+
+  header a[title="Export CSV"],
+  header button[title="Print / Save as PDF"],
+  header button[title="Refresh"] {
+    display: none !important;
+  }
+
+  .bg-navy-800, .bg-navy-900 {
+    background: white !important;
+    border: 1px solid #ddd !important;
+  }
+
+  .text-gray-300, .text-gray-400, .text-gray-500 {
+    color: #333 !important;
+  }
+
+  .text-white, .text-cyan-400 {
+    color: #000 !important;
+  }
+
+  .text-emerald-400 {
+    color: #047857 !important;
+  }
+
+  .text-red-400 {
+    color: #dc2626 !important;
+  }
+
+  .text-amber-400 {
+    color: #d97706 !important;
+  }
+
+  .recharts-surface {
+    max-width: 100% !important;
+  }
+}

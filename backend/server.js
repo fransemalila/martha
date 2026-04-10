@@ -207,6 +207,126 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", uptime: process.uptime() });
 });
 
+// GET /api/export/csv?section=overview|forecast|actuals|payments
+app.get("/api/export/csv", (_req, res) => {
+  try {
+    const db = getDb();
+    const section = _req.query.section || "overview";
+
+    const latestForecast = db.prepare(
+      "SELECT parsed_data FROM uploads WHERE type = 'forecast' AND status = 'parsed' ORDER BY created_at DESC LIMIT 1"
+    ).get();
+    const latestReport = db.prepare(
+      "SELECT parsed_data FROM uploads WHERE type = 'report' AND status = 'parsed' ORDER BY created_at DESC LIMIT 1"
+    ).get();
+
+    const forecast = latestForecast ? JSON.parse(latestForecast.parsed_data) : null;
+    const report = latestReport ? JSON.parse(latestReport.parsed_data) : null;
+
+    let csvContent = "";
+    const timestamp = new Date().toISOString().split("T")[0];
+
+    if (section === "overview" && report) {
+      csvContent = "Treasury Dashboard - Overview Report\n";
+      csvContent += `Generated: ${timestamp}\n\n`;
+
+      // Summary
+      const s = report.summary || {};
+      csvContent += "SUMMARY\n";
+      csvContent += "Metric,Amount (TZS)\n";
+      csvContent += `Opening Balance,${s.openingBalance || 0}\n`;
+      csvContent += `Total Receipts,${s.totalReceipts || 0}\n`;
+      csvContent += `Total Disbursements,${s.totalDisbursements || 0}\n`;
+      csvContent += `Net Cash Flow,${s.netCashFlow || 0}\n`;
+      csvContent += `Closing Balance,${s.closingBalance || 0}\n`;
+      csvContent += `Taxes,${s.taxes || 0}\n\n`;
+
+      // Receipt breakdown
+      if (report.receiptBreakdown?.length) {
+        csvContent += "RECEIPT BREAKDOWN\n";
+        csvContent += "Category,Amount (TZS)\n";
+        for (const r of report.receiptBreakdown) {
+          csvContent += `"${r.category}",${r.amount}\n`;
+        }
+        csvContent += "\n";
+      }
+
+      // Disbursement breakdown
+      if (report.disbursementBreakdown?.length) {
+        csvContent += "DISBURSEMENT BREAKDOWN\n";
+        csvContent += "Category,Amount (TZS)\n";
+        for (const d of report.disbursementBreakdown) {
+          csvContent += `"${d.category}",${d.amount}\n`;
+        }
+        csvContent += "\n";
+      }
+
+      // Bank balances
+      if (report.bankBalances?.length) {
+        csvContent += "BANK BALANCES\n";
+        csvContent += "Account,Status,Opening Balance,Cash Received,Cash Spent,Closing Balance (TZS)\n";
+        for (const b of report.bankBalances) {
+          csvContent += `"${b.account}","${b.status}",${b.openingBalance},${b.cashReceived},${b.cashSpent},${b.closingBalanceTZS}\n`;
+        }
+      }
+    } else if (section === "forecast" && forecast) {
+      csvContent = "Treasury Dashboard - Cash Flow Forecast\n";
+      csvContent += `Generated: ${timestamp}\n\n`;
+      csvContent += "Month,Receipts,Direct Costs,Operating Expenses,Net Cash Flow,Closing Balance\n";
+      for (const m of forecast.monthly || []) {
+        csvContent += `${m.month},${m.totalReceipts || 0},${m.totalDirectCosts || 0},${m.totalOpex || 0},${m.netCashFlow || 0},${m.closingBalance || 0}\n`;
+      }
+    } else if (section === "actuals" && report) {
+      csvContent = "Treasury Dashboard - Tax Analysis\n";
+      csvContent += `Generated: ${timestamp}\n\n`;
+      if (report.reserves?.components?.length) {
+        csvContent += "TAX COMPONENTS\n";
+        csvContent += "Category,Amount (TZS)\n";
+        for (const t of report.reserves.components) {
+          csvContent += `"${t.category}",${t.amount}\n`;
+        }
+        csvContent += `\nTotal Tax Liability,${report.reserves.totalTaxLiability || 0}\n`;
+      }
+    } else if (section === "payments" && report) {
+      csvContent = "Treasury Dashboard - Payments & Obligations\n";
+      csvContent += `Generated: ${timestamp}\n\n`;
+      const pr = report.paymentRuns || {};
+      if (pr.vendors?.length) {
+        csvContent += "VENDOR PAYMENTS\n";
+        csvContent += "Description,Amount (TZS),Date\n";
+        for (const v of pr.vendors) {
+          csvContent += `"${v.label}",${v.amount},"${v.date || ""}"\n`;
+        }
+        csvContent += "\n";
+      }
+      if (pr.relatedParty?.length) {
+        csvContent += "RELATED PARTY PAYMENTS\n";
+        csvContent += "Description,Amount (TZS),Date\n";
+        for (const rp of pr.relatedParty) {
+          csvContent += `"${rp.label}",${rp.amount},"${rp.date || ""}"\n`;
+        }
+        csvContent += "\n";
+      }
+      if (pr.taxes?.length) {
+        csvContent += "TAX PAYMENTS\n";
+        csvContent += "Description,Amount (TZS),Date\n";
+        for (const t of pr.taxes) {
+          csvContent += `"${t.label}",${t.amount},"${t.date || ""}"\n`;
+        }
+      }
+    } else {
+      csvContent = "No data available for this section\n";
+    }
+
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="treasury-${section}-${timestamp}.csv"`);
+    res.send(csvContent);
+  } catch (err) {
+    console.error("Export error:", err);
+    res.status(500).json({ error: "Export failed" });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Treasury Dashboard API running on port ${PORT}`);
   console.log(`Data directory: ${DATA_DIR}`);
