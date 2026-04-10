@@ -1,23 +1,27 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
   AreaChart, Area, BarChart,
 } from "recharts";
 import ChartCard from "./ChartCard";
 import CustomTooltip from "./CustomTooltip";
+import PeriodFilter, { filterMonths } from "./PeriodFilter";
 import { formatCurrency } from "../utils/format";
 
 export default function ForecastTab({ data }) {
+  const [period, setPeriod] = useState({ type: "all" });
   const forecast = data?.forecast;
-  const monthly = forecast?.monthly || [];
+  const allMonthly = forecast?.monthly || [];
 
-  if (monthly.length === 0) {
+  if (allMonthly.length === 0) {
     return (
       <div className="flex items-center justify-center h-[60vh] text-gray-500">
         No forecast data available. Upload a Cash Flow Forecast file.
       </div>
     );
   }
+
+  const monthly = filterMonths(allMonthly, period);
 
   // Monthly trend data for composed chart
   const trendData = monthly.map((m) => ({
@@ -64,8 +68,20 @@ export default function ForecastTab({ data }) {
     closing: m.closingBalance || 0,
   }));
 
+  // Period totals
+  const periodTotals = {
+    receipts: summaryData.reduce((s, r) => s + r.receipts, 0),
+    directCosts: summaryData.reduce((s, r) => s + r.directCosts, 0),
+    opex: summaryData.reduce((s, r) => s + r.opex, 0),
+    netFlow: summaryData.reduce((s, r) => s + r.netFlow, 0),
+    closing: summaryData.length > 0 ? summaryData[summaryData.length - 1].closing : 0,
+  };
+
   return (
     <div className="space-y-6">
+      {/* Period Filter */}
+      <PeriodFilter value={period} onChange={setPeriod} />
+
       {/* Monthly Trend Chart */}
       <ChartCard title="Monthly Cash Flow Trend">
         <ResponsiveContainer width="100%" height={360}>
@@ -165,6 +181,20 @@ export default function ForecastTab({ data }) {
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr className="border-t border-gray-600 font-medium">
+                <td className="py-2.5 pr-4 text-gray-200 text-sm">Selected Period Total</td>
+                <td className="py-2.5 pr-4 text-right font-mono text-emerald-400">{formatCurrency(periodTotals.receipts)}</td>
+                <td className="py-2.5 pr-4 text-right font-mono text-red-400">{formatCurrency(periodTotals.directCosts)}</td>
+                <td className="py-2.5 pr-4 text-right font-mono text-amber-400">{formatCurrency(periodTotals.opex)}</td>
+                <td className={`py-2.5 pr-4 text-right font-mono font-medium ${periodTotals.netFlow >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                  {formatCurrency(periodTotals.netFlow)}
+                </td>
+                <td className="py-2.5 text-right font-mono font-medium" title={formatCurrency(periodTotals.closing, false)}>
+                  {formatCurrency(periodTotals.closing)}
+                </td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       </ChartCard>

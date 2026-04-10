@@ -127,7 +127,9 @@ function extractLabeledRows(rows, labelCol, dataStartCol, numCols) {
     const totalCol = dataStartCol + numCols;
     const yearTotal = totalCol < row.length ? parseNumeric(row[totalCol]) : values.reduce((a, b) => a + b, 0);
 
-    result[label] = { values, yearTotal, rowIndex: i, rawLabel: label };
+    // Handle duplicate labels by appending row index to avoid overwriting
+    const key = result[label] ? `${label}__row${i}` : label;
+    result[key] = { values, yearTotal, rowIndex: i, rawLabel: label };
   }
   return result;
 }
@@ -188,7 +190,7 @@ function parseCFSheet(workbook) {
 
   // Define categories to match
   const categories = {
-    beginningBalance: ["BEGINNING BALANCE", "CASH IN BANK", "OPENING BALANCE"],
+    beginningBalance: ["BEGINNING BALANCE", "OPENING BALANCE", "BEG BALANCE", "START BALANCE", "OPENING CASH IN BANK"],
     c2bMobile: ["C2B MOBILE MONEY", "C2B MOBILE MONEY TRANSFERS"],
     liquidationCall: ["LIQUIDATION OF CALL DEPOSIT", "LIQUIDATION CALL DEPOSIT"],
     interestIncome: ["INTEREST INCOME"],
@@ -226,7 +228,7 @@ function parseCFSheet(workbook) {
     auditFees: ["AUDIT FEES"],
     totalOpex: ["TOTAL OPERATING EXPENSES", "TOTAL OPEX"],
     netCashFlow: ["NET CASH FLOW", "NET CASHFLOW"],
-    closingBalance: ["CLOSING BALANCE", "CLOSING CASH IN BANK"],
+    closingBalance: ["CLOSING BALANCE", "CLOSING CASH IN BANK", "CLOSING BALANCE CASH IN BANK", "END BALANCE", "ENDING BALANCE", "ENDING CASH"],
   };
 
   const matched = {};

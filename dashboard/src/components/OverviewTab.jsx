@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
@@ -6,11 +6,13 @@ import { Wallet, ArrowDownLeft, ArrowUpRight, TrendingDown, Landmark, Info } fro
 import KPICard from "./KPICard";
 import ChartCard from "./ChartCard";
 import CustomTooltip from "./CustomTooltip";
+import PeriodFilter, { filterMonths } from "./PeriodFilter";
 import { formatCurrency } from "../utils/format";
 
 const PIE_COLORS = ["#22d3ee", "#10b981", "#a78bfa", "#f59e0b", "#ef4444", "#6366f1", "#ec4899", "#14b8a6"];
 
 export default function OverviewTab({ data }) {
+  const [period, setPeriod] = useState({ type: "all" });
   const report = data?.report;
   const forecast = data?.forecast;
   const summary = report?.summary || {};
@@ -20,43 +22,49 @@ export default function OverviewTab({ data }) {
   const sideData = report?.sideData || {};
   const bankBalances = report?.bankBalances || [];
 
-  // Use report data first, fall back to current month forecast data
-  const forecastMonthly = forecast?.monthly || [];
+  // Use report data first, fall back to filtered forecast data
+  const allForecastMonthly = forecast?.monthly || [];
+  const forecastMonthly = filterMonths(allForecastMonthly, period);
   const currentMonthIdx = new Date().getMonth();
-  const currentForecast = forecastMonthly[currentMonthIdx] || {};
-
-  const openingBalance = summary.openingBalance || currentForecast.beginningBalance || 0;
-  const totalReceipts = summary.totalReceipts || currentForecast.totalReceipts || 0;
-  const totalDisbursements = summary.totalDisbursements ||
-    (Math.abs(currentForecast.totalDirectCosts || 0) + Math.abs(currentForecast.totalOpex || 0)) || 0;
-  const netCashFlow = summary.netCashFlow || currentForecast.netCashFlow || (totalReceipts - totalDisbursements);
-  const closingBalance = summary.closingBalance || currentForecast.closingBalance || 0;
+  const currentForecast = allForecastMonthly[currentMonthIdx] || {};
 
   const usingForecast = !data?.hasReport && data?.hasForecast;
 
-  // Build receipt pie from report, or from forecast revenue lines
+  // When using forecast, aggregate over selected period
+  const openingBalance = summary.openingBalance ||
+    (forecastMonthly.length > 0 ? (forecastMonthly[0].beginningBalance || 0) : 0);
+  const totalReceipts = summary.totalReceipts ||
+    forecastMonthly.reduce((s, m) => s + (m.totalReceipts || 0), 0);
+  const totalDisbursements = summary.totalDisbursements ||
+    forecastMonthly.reduce((s, m) => s + Math.abs(m.totalDirectCosts || 0) + Math.abs(m.totalOpex || 0), 0);
+  const netCashFlow = summary.netCashFlow ||
+    forecastMonthly.reduce((s, m) => s + (m.netCashFlow || 0), 0) || (totalReceipts - totalDisbursements);
+  const closingBalance = summary.closingBalance ||
+    (forecastMonthly.length > 0 ? (forecastMonthly[forecastMonthly.length - 1].closingBalance || 0) : 0);
+
+  // Build receipt pie from report, or from forecast revenue lines (aggregated over selected period)
   let receiptPieData = receipts.filter((r) => r.amount > 0).sort((a, b) => b.amount - a.amount);
-  if (receiptPieData.length === 0 && currentForecast.c2bMobile) {
+  if (receiptPieData.length === 0 && forecastMonthly.length > 0) {
     const forecastReceipts = [
-      { category: "C2B Mobile Money", amount: currentForecast.c2bMobile || 0 },
-      { category: "Interest Income", amount: (currentForecast.interestIncome || 0) + (currentForecast.interestMNO || 0) },
-      { category: "Fixed Deposit Maturity", amount: currentForecast.fixedDepositMaturity || 0 },
-      { category: "Liquidation Call Deposit", amount: currentForecast.liquidationCall || 0 },
-      { category: "Other Income", amount: (currentForecast.otherIncome || 0) + (currentForecast.cashDeposit || 0) },
+      { category: "C2B Mobile Money", amount: forecastMonthly.reduce((s, m) => s + (m.c2bMobile || 0), 0) },
+      { category: "Interest Income", amount: forecastMonthly.reduce((s, m) => s + (m.interestIncome || 0) + (m.interestMNO || 0), 0) },
+      { category: "Fixed Deposit Maturity", amount: forecastMonthly.reduce((s, m) => s + (m.fixedDepositMaturity || 0), 0) },
+      { category: "Liquidation Call Deposit", amount: forecastMonthly.reduce((s, m) => s + (m.liquidationCall || 0), 0) },
+      { category: "Other Income", amount: forecastMonthly.reduce((s, m) => s + (m.otherIncome || 0) + (m.cashDeposit || 0), 0) },
     ].filter((r) => r.amount > 0);
     receiptPieData = forecastReceipts;
   }
 
-  // Build disbursement breakdown from report, or from forecast
+  // Build disbursement breakdown from report, or from forecast (aggregated over selected period)
   let disbursementBarData = disbursements.filter((d) => d.amount > 0).sort((a, b) => b.amount - a.amount);
-  if (disbursementBarData.length === 0 && currentForecast.totalDirectCosts) {
+  if (disbursementBarData.length === 0 && forecastMonthly.length > 0) {
     const forecastDisb = [
-      { category: "Gaming Taxes", amount: Math.abs(currentForecast.gamingTaxes || 0) },
-      { category: "SPS Sportsoft", amount: Math.abs(currentForecast.spsSportsoft || 0) },
-      { category: "Personnel Costs", amount: Math.abs(currentForecast.personnelCosts || 0) },
-      { category: "Marketing", amount: Math.abs(currentForecast.marketingCosts || 0) },
-      { category: "Rent & Utilities", amount: Math.abs(currentForecast.rentUtilities || 0) },
-      { category: "Bank Charges", amount: Math.abs(currentForecast.bankCharges || 0) },
+      { category: "Gaming Taxes", amount: forecastMonthly.reduce((s, m) => s + Math.abs(m.gamingTaxes || 0), 0) },
+      { category: "SPS Sportsoft", amount: forecastMonthly.reduce((s, m) => s + Math.abs(m.spsSportsoft || 0), 0) },
+      { category: "Personnel Costs", amount: forecastMonthly.reduce((s, m) => s + Math.abs(m.personnelCosts || 0), 0) },
+      { category: "Marketing", amount: forecastMonthly.reduce((s, m) => s + Math.abs(m.marketingCosts || 0), 0) },
+      { category: "Rent & Utilities", amount: forecastMonthly.reduce((s, m) => s + Math.abs(m.rentUtilities || 0), 0) },
+      { category: "Bank Charges", amount: forecastMonthly.reduce((s, m) => s + Math.abs(m.bankCharges || 0), 0) },
     ].filter((d) => d.amount > 0).sort((a, b) => b.amount - a.amount);
     disbursementBarData = forecastDisb;
   }
@@ -70,11 +78,14 @@ export default function OverviewTab({ data }) {
 
   return (
     <div className="space-y-6">
+      {/* Period Filter */}
+      <PeriodFilter value={period} onChange={setPeriod} />
+
       {/* Data source indicator */}
       {usingForecast && (
         <div className="flex items-center gap-2 px-4 py-2.5 bg-amber-900/20 border border-amber-800/50 rounded-lg text-amber-300 text-sm">
           <Info className="w-4 h-4" />
-          Showing forecast data for the current month. Upload a Cashflow Report file for actuals.
+          Showing forecast data for selected period. Upload a Cashflow Report file for actuals.
         </div>
       )}
 

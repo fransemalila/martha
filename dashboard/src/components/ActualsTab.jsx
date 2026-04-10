@@ -1,24 +1,29 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
   LineChart, Line, PieChart, Pie, Cell,
 } from "recharts";
-import { TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { TrendingUp, TrendingDown, Minus, Info } from "lucide-react";
 import ChartCard from "./ChartCard";
 import CustomTooltip from "./CustomTooltip";
+import PeriodFilter, { filterMonths, getMonthIndices } from "./PeriodFilter";
 import { formatCurrency, formatPercent } from "../utils/format";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const TAX_COLORS = ["#ef4444", "#f59e0b", "#a78bfa", "#6366f1", "#22d3ee", "#10b981", "#ec4899"];
 
 export default function ActualsTab({ data }) {
+  const [period, setPeriod] = useState({ type: "all" });
   const report = data?.report || {};
   const forecast = data?.forecast || {};
-  const forecastMonthly = forecast?.monthly || [];
+  const allForecastMonthly = forecast?.monthly || [];
+  const forecastMonthly = filterMonths(allForecastMonthly, period);
   const summary = report?.summary || {};
   const dailyCashFlow = report?.dailyCashFlow || [];
   const dailyReceipts = report?.dailyReceipts || {};
   const reserves = report?.reserves || {};
+  const hasReportData = !!(summary.totalReceipts || summary.totalDisbursements || dailyCashFlow.length > 0);
+  const forecastOnly = !hasReportData && allForecastMonthly.length > 0;
 
   // Actual vs Forecast comparison
   // Use report summary as "current month" actuals, forecast as projected
@@ -45,14 +50,23 @@ export default function ActualsTab({ data }) {
   }
 
   // Variance cards
-  const latestForecast = forecastMonthly[currentMonth] || {};
-  const forecastReceipts = latestForecast.totalReceipts || 0;
-  const forecastDisbursements = Math.abs(latestForecast.totalDirectCosts || 0) + Math.abs(latestForecast.totalOpex || 0);
-  const forecastNetFlow = latestForecast.netCashFlow || 0;
+  const selectedIndices = getMonthIndices(period);
+  const latestForecast = allForecastMonthly[currentMonth] || {};
 
-  const actualReceipts = summary.totalReceipts || 0;
-  const actualDisbursements = summary.totalDisbursements || 0;
-  const actualNetFlow = summary.netCashFlow || (actualReceipts - actualDisbursements);
+  // When forecast only, aggregate over selected period
+  const forecastReceipts = forecastOnly
+    ? forecastMonthly.reduce((s, m) => s + (m.totalReceipts || 0), 0)
+    : (latestForecast.totalReceipts || 0);
+  const forecastDisbursements = forecastOnly
+    ? forecastMonthly.reduce((s, m) => s + Math.abs(m.totalDirectCosts || 0) + Math.abs(m.totalOpex || 0), 0)
+    : (Math.abs(latestForecast.totalDirectCosts || 0) + Math.abs(latestForecast.totalOpex || 0));
+  const forecastNetFlow = forecastOnly
+    ? forecastMonthly.reduce((s, m) => s + (m.netCashFlow || 0), 0)
+    : (latestForecast.netCashFlow || 0);
+
+  const actualReceipts = forecastOnly ? forecastReceipts : (summary.totalReceipts || 0);
+  const actualDisbursements = forecastOnly ? forecastDisbursements : (summary.totalDisbursements || 0);
+  const actualNetFlow = forecastOnly ? forecastNetFlow : (summary.netCashFlow || (actualReceipts - actualDisbursements));
 
   const receiptsVariance = forecastReceipts ? ((actualReceipts - forecastReceipts) / forecastReceipts) * 100 : 0;
   const disbursementsVariance = forecastDisbursements ? ((actualDisbursements - forecastDisbursements) / forecastDisbursements) * 100 : 0;
@@ -90,12 +104,35 @@ export default function ActualsTab({ data }) {
   const taxComponents = reserves?.components || [];
   const taxPieData = taxComponents.filter((t) => t.amount > 0);
 
-  function VarianceCard({ title, actual, forecast: fc, variance }) {
+  // Forecast expense categories for fallback display
+  const forecastExpenseCategories = forecastOnly ? [
+    { category: "Gaming Taxes", amount: forecastMonthly.reduce((s, m) => s + Math.abs(m.gamingTaxes || 0), 0) },
+    { category: "SPS Sportsoft", amount: forecastMonthly.reduce((s, m) => s + Math.abs(m.spsSportsoft || 0), 0) },
+    { category: "Personnel Costs", amount: forecastMonthly.reduce((s, m) => s + Math.abs(m.personnelCosts || 0), 0) },
+    { category: "Marketing Costs", amount: forecastMonthly.reduce((s, m) => s + Math.abs(m.marketingCosts || 0), 0) },
+    { category: "Rent & Utilities", amount: forecastMonthly.reduce((s, m) => s + Math.abs(m.rentUtilities || 0), 0) },
+    { category: "Bank Charges", amount: forecastMonthly.reduce((s, m) => s + Math.abs(m.bankCharges || 0), 0) },
+    { category: "Other OpEx", amount: forecastMonthly.reduce((s, m) => s + Math.abs((m.totalOpex || 0) - (m.personnelCosts || 0) - (m.marketingCosts || 0) - (m.rentUtilities || 0) - (m.bankCharges || 0)), 0) },
+  ].filter((c) => c.amount > 0).sort((a, b) => b.amount - a.amount) : [];
+
+  // Forecast full-year comparison chart data
+  const forecastComparisonData = forecastMonthly.map((m) => ({
+    month: m.month,
+    receipts: m.totalReceipts || 0,
+    directCosts: Math.abs(m.totalDirectCosts || 0),
+    opex: Math.abs(m.totalOpex || 0),
+    netFlow: m.netCashFlow || 0,
+  }));
+
+  function VarianceCard({ title, actual, forecast: fc, variance, note }) {
     const isPositive = variance > 0;
     const Icon = variance > 0 ? TrendingUp : variance < 0 ? TrendingDown : Minus;
     return (
       <div className="bg-navy-800 rounded-xl p-5 border border-gray-800">
-        <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">{title}</div>
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-xs text-gray-400 uppercase tracking-wider">{title}</span>
+          {note && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/30 text-amber-400 border border-amber-800/40">{note}</span>}
+        </div>
         <div className="flex items-baseline gap-3 mb-2">
           <span className="text-xl font-bold font-mono text-white">{formatCurrency(actual)}</span>
           <span className="text-xs text-gray-500">vs {formatCurrency(fc)}</span>
