@@ -56,7 +56,7 @@ function authCheck(req, res, next) {
   next();
 }
 
-// POST /api/upload
+// POST /api/upload — runs BOTH parsers on every file for maximum data extraction
 app.post("/api/upload", authCheck, upload.single("file"), (req, res) => {
   try {
     if (!req.file) {
@@ -65,53 +65,84 @@ app.post("/api/upload", authCheck, upload.single("file"), (req, res) => {
 
     const fileType = req.body?.type;
     if (!fileType || !["forecast", "report"].includes(fileType)) {
-      // Clean up uploaded file
       fs.unlinkSync(req.file.path);
       return res.status(400).json({ error: 'Invalid file type. Must be "forecast" or "report".' });
     }
 
     const buffer = fs.readFileSync(req.file.path);
-    let parseResult;
-
-    try {
-      if (fileType === "forecast") {
-        parseResult = parseForecast(buffer);
-      } else {
-        parseResult = parseReport(buffer);
-      }
-    } catch (parseErr) {
-      fs.unlinkSync(req.file.path);
-      return res.status(422).json({
-        error: "Failed to parse Excel file",
-        details: parseErr.message,
-      });
-    }
-
     const db = getDb();
     const stmt = db.prepare(`
       INSERT INTO uploads (filename, type, filepath, filesize, parsed_data, sheets_found, warnings, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(
-      req.file.originalname,
-      fileType,
-      req.file.path,
-      req.file.size,
-      JSON.stringify(parseResult.parsedData),
-      JSON.stringify(parseResult.sheetsFound),
-      JSON.stringify(parseResult.warnings),
-      "parsed"
-    );
+    // Run BOTH parsers — a single file often contains both forecast and report data
+    let forecastResult = null;
+    let reportResult = null;
+    const allWarnings = [];
+
+    try { forecastResult = parseForecast(buffer); } catch (e) {
+      allWarnings.push("Forecast parser: " + e.message);
+    }
+    try { reportResult = parseReport(buffer); } catch (e) {
+      allWarnings.push("Report parser: " + e.message);
+    }
+
+    let sheetsFound = [];
+    let totalDataPoints = 0;
+
+    // Store forecast data if found
+    const hasForecast = forecastResult && forecastResult.dataPoints > 2;
+    if (hasForecast) {
+      sheetsFound = forecastResult.sheetsFound;
+      totalDataPoints += forecastResult.dataPoints;
+      allWarnings.push(...(forecastResult.warnings || []));
+      stmt.run(
+        req.file.originalname, "forecast", req.file.path, req.file.size,
+        JSON.stringify(forecastResult.parsedData),
+        JSON.stringify(forecastResult.sheetsFound),
+        JSON.stringify(forecastResult.warnings),
+        "parsed"
+      );
+    }
+
+    // Store report data if found
+    const hasReport = reportResult && reportResult.dataPoints > 2;
+    if (hasReport) {
+      sheetsFound = reportResult.sheetsFound;
+      totalDataPoints += reportResult.dataPoints;
+      allWarnings.push(...(reportResult.warnings || []));
+      stmt.run(
+        req.file.originalname, "report", req.file.path, req.file.size,
+        JSON.stringify(reportResult.parsedData),
+        JSON.stringify(reportResult.sheetsFound),
+        JSON.stringify(reportResult.warnings),
+        "parsed"
+      );
+    }
+
+    // If neither parser found data, store with the user-selected type
+    if (!hasForecast && !hasReport) {
+      const fallback = fileType === "forecast" ? forecastResult : reportResult;
+      if (fallback) {
+        stmt.run(
+          req.file.originalname, fileType, req.file.path, req.file.size,
+          JSON.stringify(fallback.parsedData),
+          JSON.stringify(fallback.sheetsFound),
+          JSON.stringify(fallback.warnings),
+          "parsed"
+        );
+      }
+    }
 
     res.json({
       success: true,
-      fileId: result.lastInsertRowid,
       fileName: req.file.originalname,
       type: fileType,
-      sheetsFound: parseResult.sheetsFound,
-      dataPoints: parseResult.dataPoints,
-      warnings: parseResult.warnings,
+      autoDetected: { hasForecast, hasReport },
+      sheetsFound,
+      dataPoints: totalDataPoints,
+      warnings: allWarnings.filter(Boolean),
     });
   } catch (err) {
     console.error("Upload error:", err);
