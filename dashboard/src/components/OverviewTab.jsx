@@ -2,7 +2,7 @@ import React from "react";
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
-import { Wallet, ArrowDownLeft, ArrowUpRight, TrendingDown, Landmark, Shield, AlertTriangle } from "lucide-react";
+import { Wallet, ArrowDownLeft, ArrowUpRight, TrendingDown, Landmark, Info } from "lucide-react";
 import KPICard from "./KPICard";
 import ChartCard from "./ChartCard";
 import CustomTooltip from "./CustomTooltip";
@@ -12,6 +12,7 @@ const PIE_COLORS = ["#22d3ee", "#10b981", "#a78bfa", "#f59e0b", "#ef4444", "#636
 
 export default function OverviewTab({ data }) {
   const report = data?.report;
+  const forecast = data?.forecast;
   const summary = report?.summary || {};
   const receipts = report?.receiptBreakdown || [];
   const disbursements = report?.disbursementBreakdown || [];
@@ -19,30 +20,69 @@ export default function OverviewTab({ data }) {
   const sideData = report?.sideData || {};
   const bankBalances = report?.bankBalances || [];
 
-  // KPI values
-  const openingBalance = summary.openingBalance || 0;
-  const totalReceipts = summary.totalReceipts || 0;
-  const totalDisbursements = summary.totalDisbursements || 0;
-  const netCashFlow = summary.netCashFlow || (totalReceipts - totalDisbursements);
-  const closingBalance = summary.closingBalance || 0;
+  // Use report data first, fall back to current month forecast data
+  const forecastMonthly = forecast?.monthly || [];
+  const currentMonthIdx = new Date().getMonth();
+  const currentForecast = forecastMonthly[currentMonthIdx] || {};
 
-  // Receipt pie data
-  const receiptPieData = receipts
-    .filter((r) => r.amount > 0)
-    .sort((a, b) => b.amount - a.amount);
+  const openingBalance = summary.openingBalance || currentForecast.beginningBalance || 0;
+  const totalReceipts = summary.totalReceipts || currentForecast.totalReceipts || 0;
+  const totalDisbursements = summary.totalDisbursements ||
+    (Math.abs(currentForecast.totalDirectCosts || 0) + Math.abs(currentForecast.totalOpex || 0)) || 0;
+  const netCashFlow = summary.netCashFlow || currentForecast.netCashFlow || (totalReceipts - totalDisbursements);
+  const closingBalance = summary.closingBalance || currentForecast.closingBalance || 0;
 
-  // Disbursement bar data
-  const disbursementBarData = disbursements
-    .filter((d) => d.amount > 0)
-    .sort((a, b) => b.amount - a.amount);
+  const usingForecast = !data?.hasReport && data?.hasForecast;
+
+  // Build receipt pie from report, or from forecast revenue lines
+  let receiptPieData = receipts.filter((r) => r.amount > 0).sort((a, b) => b.amount - a.amount);
+  if (receiptPieData.length === 0 && currentForecast.c2bMobile) {
+    const forecastReceipts = [
+      { category: "C2B Mobile Money", amount: currentForecast.c2bMobile || 0 },
+      { category: "Interest Income", amount: (currentForecast.interestIncome || 0) + (currentForecast.interestMNO || 0) },
+      { category: "Fixed Deposit Maturity", amount: currentForecast.fixedDepositMaturity || 0 },
+      { category: "Liquidation Call Deposit", amount: currentForecast.liquidationCall || 0 },
+      { category: "Other Income", amount: (currentForecast.otherIncome || 0) + (currentForecast.cashDeposit || 0) },
+    ].filter((r) => r.amount > 0);
+    receiptPieData = forecastReceipts;
+  }
+
+  // Build disbursement breakdown from report, or from forecast
+  let disbursementBarData = disbursements.filter((d) => d.amount > 0).sort((a, b) => b.amount - a.amount);
+  if (disbursementBarData.length === 0 && currentForecast.totalDirectCosts) {
+    const forecastDisb = [
+      { category: "Gaming Taxes", amount: Math.abs(currentForecast.gamingTaxes || 0) },
+      { category: "SPS Sportsoft", amount: Math.abs(currentForecast.spsSportsoft || 0) },
+      { category: "Personnel Costs", amount: Math.abs(currentForecast.personnelCosts || 0) },
+      { category: "Marketing", amount: Math.abs(currentForecast.marketingCosts || 0) },
+      { category: "Rent & Utilities", amount: Math.abs(currentForecast.rentUtilities || 0) },
+      { category: "Bank Charges", amount: Math.abs(currentForecast.bankCharges || 0) },
+    ].filter((d) => d.amount > 0).sort((a, b) => b.amount - a.amount);
+    disbursementBarData = forecastDisb;
+  }
+
+  // Forecast summary for months overview
+  const forecastSummaryData = forecastMonthly.map((m) => ({
+    month: m.month,
+    receipts: m.totalReceipts || 0,
+    costs: Math.abs(m.totalDirectCosts || 0) + Math.abs(m.totalOpex || 0),
+  }));
 
   return (
     <div className="space-y-6">
+      {/* Data source indicator */}
+      {usingForecast && (
+        <div className="flex items-center gap-2 px-4 py-2.5 bg-amber-900/20 border border-amber-800/50 rounded-lg text-amber-300 text-sm">
+          <Info className="w-4 h-4" />
+          Showing forecast data for the current month. Upload a Cashflow Report file for actuals.
+        </div>
+      )}
+
       {/* KPI Row */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-        <KPICard title="Opening Balance" value={openingBalance} icon={Wallet} color="cyan" />
-        <KPICard title="Total Receipts MTD" value={totalReceipts} icon={ArrowDownLeft} color="green" />
-        <KPICard title="Total Disbursements MTD" value={totalDisbursements} icon={ArrowUpRight} color="red" />
+        <KPICard title="Opening Balance" value={openingBalance} icon={Wallet} color="cyan" subtitle={usingForecast ? "Forecast" : "MTD"} />
+        <KPICard title="Total Receipts" value={totalReceipts} icon={ArrowDownLeft} color="green" subtitle={usingForecast ? "Forecast" : "MTD"} />
+        <KPICard title="Total Disbursements" value={totalDisbursements} icon={ArrowUpRight} color="red" subtitle={usingForecast ? "Forecast" : "MTD"} />
         <KPICard title="Net Cash Flow" value={netCashFlow} icon={TrendingDown} color={netCashFlow >= 0 ? "green" : "red"} />
         <KPICard title="Closing Balance" value={closingBalance} icon={Landmark} color="purple" />
       </div>
@@ -50,7 +90,7 @@ export default function OverviewTab({ data }) {
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Receipt Breakdown Donut */}
-        <ChartCard title="Receipt Breakdown by Channel">
+        <ChartCard title={`Receipt Breakdown ${usingForecast ? "(Forecast)" : "by Channel"}`}>
           {receiptPieData.length > 0 ? (
             <ResponsiveContainer width="100%" height={320}>
               <PieChart>
@@ -92,7 +132,7 @@ export default function OverviewTab({ data }) {
         </ChartCard>
 
         {/* Disbursement Breakdown */}
-        <ChartCard title="Disbursement Breakdown">
+        <ChartCard title={`Disbursement Breakdown ${usingForecast ? "(Forecast)" : ""}`}>
           {disbursementBarData.length > 0 ? (
             <ResponsiveContainer width="100%" height={320}>
               <BarChart data={disbursementBarData} layout="vertical" margin={{ left: 20, right: 20 }}>
@@ -114,7 +154,7 @@ export default function OverviewTab({ data }) {
         </ChartCard>
       </div>
 
-      {/* Cash Position & Reserves */}
+      {/* Cash Position & Bank Balances */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <ChartCard title="Cash Position Summary" className="lg:col-span-1">
           <div className="space-y-4">
@@ -143,9 +183,9 @@ export default function OverviewTab({ data }) {
           </div>
         </ChartCard>
 
-        {/* Bank Balances Table */}
-        <ChartCard title="Bank Account Balances" className="lg:col-span-2">
-          {bankBalances.length > 0 ? (
+        {/* Bank Balances or Forecast Monthly Overview */}
+        {bankBalances.length > 0 ? (
+          <ChartCard title="Bank Account Balances" className="lg:col-span-2">
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
@@ -178,10 +218,26 @@ export default function OverviewTab({ data }) {
                 </tbody>
               </table>
             </div>
-          ) : (
+          </ChartCard>
+        ) : forecastSummaryData.length > 0 ? (
+          <ChartCard title="Monthly Forecast Overview" className="lg:col-span-2">
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={forecastSummaryData} margin={{ left: 10, right: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                <YAxis tickFormatter={(v) => formatCurrency(v)} tick={{ fontSize: 11 }} />
+                <Tooltip content={<CustomTooltip />} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Bar dataKey="receipts" name="Receipts" fill="#10b981" radius={[2, 2, 0, 0]} barSize={14} />
+                <Bar dataKey="costs" name="Costs" fill="#ef4444" radius={[2, 2, 0, 0]} barSize={14} />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        ) : (
+          <ChartCard title="Bank Account Balances" className="lg:col-span-2">
             <div className="h-[200px] flex items-center justify-center text-gray-500 text-sm">No bank balance data</div>
-          )}
-        </ChartCard>
+          </ChartCard>
+        )}
       </div>
     </div>
   );

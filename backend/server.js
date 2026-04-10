@@ -207,6 +207,47 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", uptime: process.uptime() });
 });
 
+// Debug endpoint — shows parsed data summary
+app.get("/api/debug/parsed", (_req, res) => {
+  try {
+    const db = getDb();
+    const files = db.prepare(
+      "SELECT id, filename, type, status, created_at, parsed_data FROM uploads ORDER BY created_at DESC"
+    ).all();
+
+    const summary = files.map((f) => {
+      const parsed = JSON.parse(f.parsed_data || "{}");
+      const keys = {};
+      function countKeys(obj, prefix = "") {
+        for (const [k, v] of Object.entries(obj || {})) {
+          const path = prefix ? `${prefix}.${k}` : k;
+          if (Array.isArray(v)) {
+            keys[path] = `[${v.length} items]`;
+          } else if (typeof v === "object" && v !== null) {
+            keys[path] = "{object}";
+            countKeys(v, path);
+          } else {
+            keys[path] = v;
+          }
+        }
+      }
+      countKeys(parsed);
+      return {
+        id: f.id,
+        filename: f.filename,
+        type: f.type,
+        status: f.status,
+        created_at: f.created_at,
+        dataKeys: keys,
+      };
+    });
+
+    res.json(summary);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/export/csv?section=overview|forecast|actuals|payments
 app.get("/api/export/csv", (_req, res) => {
   try {
